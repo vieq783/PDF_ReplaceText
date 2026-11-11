@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDF Text Replacer - GitHub Pages</title>
+<style>
+  :root{
+    --bg:#F1F5F9; --card:#fff; --primary:#2563EB; --primary-d:#1D4ED8;
+    --label:#1E3A8A; --text:#0F172A; --muted:#64748B; --border:#CBD5E1; --seg:#E2E8F0;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:"Segoe UI",system-ui,-apple-system,sans-serif}
+  header{background:var(--primary);color:#fff;padding:0 24px;height:64px;display:flex;align-items:center;gap:14px}
+  header h1{margin:0;font-size:20px}
+  header span{color:#BFDBFE;font-size:14px}
+  main{max-width:640px;margin:0 auto;padding:20px 16px 40px}
+  .card{background:var(--card);border-radius:14px;padding:16px 20px 24px;box-shadow:0 1px 3px rgba(15,23,42,.08)}
+  .title{display:flex;align-items:center;gap:8px;margin:16px 0 6px;color:var(--label);font-weight:700;font-size:14px}
+  .title::before{content:"";width:4px;height:16px;background:var(--primary);border-radius:2px}
+  input[type=text]{width:100%;height:40px;padding:0 14px;border:1px solid var(--border);border-radius:8px;font:inherit;outline:none}
+  input[type=text]:focus{border-color:var(--primary);box-shadow:0 0 0 1px var(--primary)}
+  .drop{border:2px dashed var(--border);border-radius:8px;padding:20px;text-align:center;color:var(--muted);cursor:pointer;transition:.15s}
+  .drop:hover{border-color:var(--primary);background:#EFF6FF;color:var(--primary)}
+  .seg{display:flex;gap:8px}
+  .seg button{flex:1;height:36px;border:0;border-radius:8px;background:var(--seg);color:var(--text);font:inherit;cursor:pointer}
+  .seg button.on{background:var(--primary);color:#fff;font-weight:700}
+  .run{width:100%;height:46px;margin-top:20px;border:0;border-radius:8px;background:var(--primary);color:#fff;font:inherit;font-size:15px;font-weight:700;cursor:pointer}
+  .run:hover{background:var(--primary-d)}
+  .run:disabled{background:#94A3B8;cursor:default}
+  .bar{height:8px;border-radius:4px;background:var(--seg);margin-top:14px;overflow:hidden}
+  .bar>div{height:100%;width:0;background:var(--primary);transition:width .15s}
+  #status{margin-top:8px;font-size:13px;color:var(--muted);min-height:18px}
+  #result{display:none;margin-top:14px;padding:14px;border-radius:8px;background:#ECFDF5;border:1px solid #A7F3D0}
+  #result a{display:inline-block;margin-top:8px;padding:10px 18px;background:#059669;color:#fff;border-radius:8px;text-decoration:none;font-weight:700}
+</style>
+</head>
+<body>
+<header><h1>PDF Text Replacer</h1><span>Trang tĩnh GitHub Pages</span></header>
+<main>
+<div class="card">
+  <div class="title">File PDF</div>
+  <div class="drop" id="drop"><b id="fileName">Chọn file PDF…</b><br>hoặc kéo thả file vào đây</div>
+  <input type="file" id="file" accept="application/pdf" hidden>
+
+  <div class="title">Nội dung tìm</div>
+  <input type="text" id="find" autocomplete="off">
+
+  <div class="title">Nội dung thay</div>
+  <input type="text" id="replace" autocomplete="off">
+
+  <div class="title">Căn lề chữ mới</div>
+  <div class="seg" id="seg">
+    <button data-v="left">Căn trái</button>
+    <button data-v="center" class="on">Căn giữa</button>
+    <button data-v="right">Căn phải</button>
+  </div>
+
+  <div class="title">Tên file lưu</div>
+  <input type="text" id="saveName">
+
+  <button class="run" id="run">Bắt đầu thay thế</button>
+  <div class="bar"><div id="prog"></div></div>
+  <div id="status">Sẵn sàng.</div>
+  <div id="result"><div id="resultText"></div><a id="dl" href="#">⬇ Tải file hoàn thành</a></div>
+</div>
+</main>
+
+<!-- Nạp thư viện từ CDN ổn định -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@pdf-lib/fontkit@1.1.1/dist/fontkit.umd.min.js"></script>
+
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+const { PDFDocument, rgb } = PDFLib;
+
+let pdfBytes = null, align = "center", lastUrl = null;
+const fontDataCache = new Map();
+
+// Bản đồ ánh xạ font tĩnh lưu trên repo GitHub Pages
+const BUNDLED_FONTS = {
+  times: { regular: "fonts/times.ttf", bold: "fonts/timesbd.ttf" },
+  calibri: { regular: "fonts/calibri.ttf", bold: "fonts/calibrib.ttf" },
+  arial: { regular: "fonts/arial.ttf", bold: "fonts/arialbd.ttf" },
+  tahoma: { regular: "fonts/arial.ttf", bold: "fonts/arialbd.ttf" },
+  verdana: { regular: "fonts/arial.ttf", bold: "fonts/arialbd.ttf" }
+};
+
+async function loadFontBuffer(path) {
+  if (!fontDataCache.has(path)) {
+    const res = await fetch(path);
+    if (!res.ok) throw new Error("Không thể tải font: " + path);
+    fontDataCache.set(path, new Uint8Array(await res.arrayBuffer()));
+  }
+  return fontDataCache.get(path);
+}
+
+// Logic khớp font giống PyMuPDF: bóc tách tên font và kiểu bold
+async function resolveAndLoadFont(fontName) {
+  const n = (fontName || "").split("+").pop().toLowerCase().replace(/[^a-z]/g, "");
+  const isBold = n.includes("bold") || n.endsWith("bd");
+  
+  let key = Object.keys(BUNDLED_FONTS).find(k => n.includes(k));
+  if (!key && n.includes("roman")) key = "times";
+  if (!key) key = "arial";
+
+  const path = isBold ? BUNDLED_FONTS[key].bold : BUNDLED_FONTS[key].regular;
+  return await loadFontBuffer(path);
+}
+
+// Quét toạ độ văn bản bằng PDF.js
+async function scanDocument(bytes, needle) {
+  const doc = await pdfjsLib.getDocument({data: bytes.slice()}).promise;
+  const matches = [];
+  for (let pn = 1; pn <= doc.numPages; pn++) {
+    const page = await doc.getPage(pn);
+    const tc = await page.getTextContent();
+    for (const item of tc.items) {
+      if (item.str && item.str.includes(needle)) {
+        matches.push({
+          pageIndex: pn - 1,
+          x: item.transform[4],
+          y: item.transform[5],
+          width: item.width,
+          height: item.height || Math.hypot(item.transform[0], item.transform[1]),
+          fontName: item.fontName
+        });
+      }
+    }
+    page.cleanup();
+  }
+  return matches;
+}
+
+// Kéo thả và chọn file
+const drop = document.getElementById("drop");
+const fileInput = document.getElementById("file");
+drop.onclick = () => fileInput.click();
+fileInput.onchange = async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  pdfBytes = new Uint8Array(await f.arrayBuffer());
+  document.getElementById("fileName").textContent = f.name;
+  document.getElementById("saveName").value = f.name.replace(/\.pdf$/i, "") + "_replaced.pdf";
+};
+
+// Căn lề
+document.getElementById("seg").onclick = e => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  align = b.dataset.v;
+  [...document.getElementById("seg").children].forEach(x => x.classList.toggle("on", x === b));
+};
+
+// Thực thi thay thế
+document.getElementById("run").onclick = async () => {
+  const findTxt = document.getElementById("find").value.trim();
+  const repTxt = document.getElementById("replace").value;
+  let saveName = document.getElementById("saveName").value.trim();
+  const runBtn = document.getElementById("run");
+  const prog = document.getElementById("prog");
+  const status = document.getElementById("status");
+
+  if (!pdfBytes) return alert("Vui lòng chọn file PDF!");
+  if (!findTxt) return alert("Vui lòng nhập từ khóa cần tìm!");
+  if (!saveName) saveName = "output.pdf";
+  if (!saveName.toLowerCase().endsWith(".pdf")) saveName += ".pdf";
+
+  runBtn.disabled = true;
+  prog.style.width = "30%";
+  status.textContent = "Đang tìm kiếm vị trí chữ...";
+
+  try {
+    const matches = await scanDocument(pdfBytes, findTxt);
+    if (!matches.length) {
+      alert("Không tìm thấy cụm từ trong file!");
+      runBtn.disabled = false;
+      prog.style.width = "0";
+      status.textContent = "Sẵn sàng.";
+      return;
+    }
+
+    prog.style.width = "60%";
+    status.textContent = "Đang nạp font chuẩn và xử lý trang...";
+
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+    pdfDoc.registerFontkit(fontkit);
+
+    // Nạp font chuẩn từ thư mục tĩnh fonts/
+    const fontBytes = await resolveAndLoadFont(matches[0].fontName);
+    const customFont = await pdfDoc.embedFont(fontBytes, { subset: true });
+
+    for (const m of matches) {
+      const page = pdfDoc.getPage(m.pageIndex);
+      
+      // Che vị trí text cũ bằng nền trắng (kèm đệm 1px xung quanh)
+      page.drawRectangle({
+        x: m.x - 1,
+        y: m.y - 2,
+        width: m.width + 2,
+        height: m.height + 4,
+        color: rgb(1, 1, 1)
+      });
+
+      if (repTxt) {
+        const textWidth = customFont.widthOfTextAtSize(repTxt, m.height);
+        let xPos = m.x;
+        if (align === "center") xPos = m.x + (m.width - textWidth) / 2;
+        else if (align === "right") xPos = m.x + (m.width - textWidth);
+
+        page.drawText(repTxt, {
+          x: xPos,
+          y: m.y,
+          size: m.height,
+          font: customFont,
+          color: rgb(0, 0, 0)
+        });
+      }
+    }
+
+    prog.style.width = "90%";
+    status.textContent = "Đang xuất file PDF hoàn tất...";
+
+    const outputPdfBytes = await pdfDoc.save();
+    if (lastUrl) URL.revokeObjectURL(lastUrl);
+    lastUrl = URL.createObjectURL(new Blob([outputPdfBytes], { type: "application/pdf" }));
+
+    const dl = document.getElementById("dl");
+    dl.href = lastUrl;
+    dl.download = saveName;
+    document.getElementById("result").style.display = "block";
+    document.getElementById("resultText").textContent = `Đã thay thế thành công ${matches.length} vị trí!`;
+    
+    prog.style.width = "100%";
+    status.textContent = "Hoàn tất.";
+  } catch (err) {
+    console.error(err);
+    alert("Có lỗi xảy ra: " + err.message);
+    status.textContent = "Lỗi khi xử lý.";
+  } finally {
+    runBtn.disabled = false;
+  }
+};
+</script>
+</body>
+</html>
